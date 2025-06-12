@@ -10,7 +10,7 @@ jobs:
     - uses: actions/checkout@v2
 
     - name: Start minikube
-      uses: kubernetes-sigs/setup-minikube@v1.9.0 # Use the official Minikube action, it's generally more robust
+      uses: kubernetes-sigs/setup-minikube@v1  # Use the official Minikube action, it's generally more robust
       with:
         minikube-version: 'latest'
         kubernetes-version: 'v1.28.0' # Good to specify, matches what GitHub's runners typically use
