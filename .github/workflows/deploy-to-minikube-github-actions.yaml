@@ -1,27 +1,55 @@
 name: Deploy to Minikube using GitHub Actions
 
 on: [push]
-  
+
 jobs:
   job1:
     runs-on: ubuntu-latest
     name: build Node.js Docker Image and deploy to minikube
     steps:
     - uses: actions/checkout@v2
+
     - name: Start minikube
-      uses: medyagh/setup-minikube@master
+      uses: kubernetes-sigs/setup-minikube@v1.9.0 # Use the official Minikube action, it's generally more robust
+      with:
+        minikube-version: 'latest'
+        kubernetes-version: 'v1.28.0' # Good to specify, matches what GitHub's runners typically use
+
     - name: Try the cluster !
       run: kubectl get pods -A
+
     - name: Build image
       run: |
-          export SHELL=/bin/bash
-          eval $(minikube -p minikube docker-env)
+          eval $(minikube docker-env)
           docker build -f ./Dockerfile -t devopshint/node-app:latest .
           echo -n "verifying images:"
-          docker images         
+          docker images
+
     - name: Deploy to minikube
-      run:
+      run: |
         kubectl apply -f k8-node.app.yaml
+
+    - name: Wait for Deployment Rollout (Crucial for pod readiness)
+      run: |
+        kubectl rollout status deployment/nodejs-app-deployment --timeout=2m || true # Allow it to fail if it can't rollout in time for debugging
+        echo "Deployment rollout status check complete."
+
+    - name: Check Pod Status
+      run: |
+        echo "Listing pods in default namespace:"
+        kubectl get pods -n default
+        echo "Describing the problematic pod (if any):"
+        # Try to get the name of a pod associated with your deployment
+        POD_NAME=$(kubectl get pods -n default -l app=nodejs-app -o jsonpath='{.items[0].metadata.name}' || true)
+        if [ -n "$POD_NAME" ]; then
+          echo "Describing pod: $POD_NAME"
+          kubectl describe pod $POD_NAME -n default
+          echo "Fetching logs for pod: $POD_NAME"
+          kubectl logs $POD_NAME -n default
+        else
+          echo "No 'nodejs-app' pod found to describe or get logs from yet."
+        fi
+
     - name: Test service URLs
       run: |
           minikube service list
