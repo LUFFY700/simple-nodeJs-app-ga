@@ -32,8 +32,7 @@ jobs:
     - name: Wait for Deployment Rollout (Crucial for pod readiness and to see crashes)
       run: |
         echo "Waiting for deployment to rollout (up to 3 minutes)."
-        # Use a longer timeout and allow failure so subsequent debug steps run
-        kubectl rollout status deployment/nodejs-app-deployment --timeout=3m || true
+        kubectl rollout status deployment/nodejs-app --timeout=3m || true
         echo "Deployment rollout status check complete."
 
     - name: Get detailed Pod Status and Events (Enhanced Debugging)
