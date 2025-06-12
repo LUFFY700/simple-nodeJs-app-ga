@@ -10,10 +10,10 @@ jobs:
     - uses: actions/checkout@v2
 
     - name: Start minikube
-      uses:  medyagh/setup-minikube@master  # Use the official Minikube action, it's generally more robust
+      uses: medyagh/setup-minikube@master
       with:
         minikube-version: 'latest'
-        kubernetes-version: 'v1.28.0' # Good to specify, matches what GitHub's runners typically use
+        kubernetes-version: 'v1.28.0' # Keep this for consistency
 
     - name: Try the cluster !
       run: kubectl get pods -A
@@ -29,26 +29,42 @@ jobs:
       run: |
         kubectl apply -f k8-node.app.yaml
 
-    - name: Wait for Deployment Rollout (Crucial for pod readiness)
+    - name: Wait for Deployment Rollout (Crucial for pod readiness and to see crashes)
       run: |
-        kubectl rollout status deployment/nodejs-app-deployment --timeout=2m || true # Allow it to fail if it can't rollout in time for debugging
+        echo "Waiting for deployment to rollout (up to 3 minutes)."
+        # Use a longer timeout and allow failure so subsequent debug steps run
+        kubectl rollout status deployment/nodejs-app-deployment --timeout=3m || true
         echo "Deployment rollout status check complete."
 
-    - name: Check Pod Status
+    - name: Get detailed Pod Status and Events (Enhanced Debugging)
       run: |
-        echo "Listing pods in default namespace:"
-        kubectl get pods -n default
-        echo "Describing the problematic pod (if any):"
-        # Try to get the name of a pod associated with your deployment
-        POD_NAME=$(kubectl get pods -n default -l app=nodejs-app -o jsonpath='{.items[0].metadata.name}' || true)
+        echo "--- Listing all pods in default namespace (wide view): ---"
+        kubectl get pods -n default -o wide
+
+        echo "--- Getting pod name for nodejs-app: ---"
+        # Safely get the pod name, handling cases where it might not be immediately available
+        POD_NAME=$(kubectl get pods -n default -l app=nodejs-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+
         if [ -n "$POD_NAME" ]; then
-          echo "Describing pod: $POD_NAME"
-          kubectl describe pod $POD_NAME -n default
-          echo "Fetching logs for pod: $POD_NAME"
-          kubectl logs $POD_NAME -n default
+          echo "--- Describing pod: $POD_NAME ---"
+          kubectl describe pod "$POD_NAME" -n default
+
+          echo "--- Attempting to fetch logs for pod: $POD_NAME ---"
+          # Try to get current logs, then previous logs if it restarted
+          kubectl logs "$POD_NAME" -n default --since=1m || kubectl logs "$POD_NAME" -n default --previous || echo "  >> Could not get current or previous logs (container might not be running or just started)."
+
+          echo "--- Getting detailed YAML for pod: $POD_NAME (shows exit codes/last state) ---"
+          kubectl get pod "$POD_NAME" -n default -o yaml
+
+          echo "--- Getting events specifically for pod: $POD_NAME ---"
+          kubectl get events -n default --field-selector involvedObject.name="$POD_NAME"
         else
-          echo "No 'nodejs-app' pod found to describe or get logs from yet."
+          echo "  >> No 'nodejs-app' pod found by label 'app=nodejs-app' after rollout attempt."
+          echo "--- Listing all events in default namespace (to see any issues that prevented pod creation): ---"
+          kubectl get events -n default
         fi
+      # Continue on error for this debug step so the next steps still run
+      continue-on-error: true
 
     - name: Test service URLs
       run: |
