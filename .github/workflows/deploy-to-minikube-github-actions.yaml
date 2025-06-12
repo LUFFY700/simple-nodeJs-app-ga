@@ -1,28 +1,81 @@
 name: Deploy to Minikube using GitHub Actions
 
-on: [push]
-  
+on:
+  push:
+    branches:
+      - main # Or your default branch, e.g., master
+
 jobs:
   job1:
     runs-on: ubuntu-latest
-    name: build Node.js Docker Image and deploy to minikube
+    name: Build, Deploy & Test Node.js App on Minikube
     steps:
     - uses: actions/checkout@v2
-    - name: Start minikube
+
+    - name: Start Minikube Cluster
       uses: medyagh/setup-minikube@master
-    - name: Try the cluster !
+      with:
+        minikube-version: 'latest'
+        kubernetes-version: 'v1.28.0' # Keep this for consistency
+
+    - name: Verify Kubernetes Cluster State
       run: kubectl get pods -A
-    - name: Build image
+
+    - name: Build Docker Image
       run: |
-          export SHELL=/bin/bash
-          eval $(minikube -p minikube docker-env)
+          eval $(minikube docker-env)
           docker build -f ./Dockerfile -t devopshint/node-app:latest .
-          echo -n "verifying images:"
-          docker images         
-    - name: Deploy to minikube
-      run:
-        kubectl apply -f k8s-node-app.yaml
-    - name: Test service URLs
+          echo "Verifying built images:"
+          docker images
+
+    - name: Deploy Application to Minikube
       run: |
+        kubectl apply -f k8-node.app.yaml
+
+    - name: Wait for Deployment Rollout to Complete
+      run: |
+        echo "Waiting for 'nodejs-app' deployment to roll out (up to 3 minutes)..."
+        # This step will fail the job if rollout doesn't complete within 3 minutes
+        kubectl rollout status deployment/nodejs-app --timeout=3m
+        echo "Deployment rollout successful!"
+
+    - name: Verify Pod Status and Fetch Initial Logs
+      run: |
+        echo "--- Listing all pods in default namespace (wide view): ---"
+        kubectl get pods -n default -o wide
+
+        echo "--- Getting pod details for nodejs-app: ---"
+        POD_NAME=$(kubectl get pods -n default -l app=nodejs-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+        if [ -n "$POD_NAME" ]; then
+          echo "--- Describing pod: $POD_NAME ---"
+          kubectl describe pod "$POD_NAME" -n default
+
+          echo "--- Fetching logs for pod: $POD_NAME (last 50 lines) ---"
+          kubectl logs "$POD_NAME" -n default --tail=50
+        else
+          echo "  >> No 'nodejs-app' pod found by label 'app=nodejs-app'. Inspect events below."
+          echo "--- Listing all events in default namespace: ---"
+          kubectl get events -n default
+        fi
+      continue-on-error: true # Allow subsequent steps to run for further debugging info
+
+    - name: Test Application Accessibility via Service URL
+      run: |
+        echo "--- Testing Node.js app accessibility via Minikube service ---"
+        SERVICE_URL=$(minikube service nodejs-app --url)
+        echo "Discovered service URL: $SERVICE_URL"
+        
+        # Use curl to hit the service. Retry mechanism for robustness.
+        echo "Attempting to connect to application (max 60 seconds, 12 retries)..."
+        if curl -f --retry 12 --retry-delay 5 "$SERVICE_URL"; then
+          echo "SUCCESS: Application responded at $SERVICE_URL!"
+        else
+          echo "ERROR: Application did NOT respond successfully at $SERVICE_URL after retries."
+          exit 1 # Fail the job if the application is not accessible
+        fi
+
+    - name: Display Minikube Service URLs
+      run: |
+          echo "--- All Minikube Services and their URLs: ---"
           minikube service list
-          minikube service nodejs-app --url
